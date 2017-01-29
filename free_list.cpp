@@ -1,3 +1,7 @@
+/* It should be a freelist as a memory pool.
+ *
+ *	v0.1: a fixed size memory pool
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,7 +218,7 @@ int main(int argc, char **argv)
 	char *p3 = t_malloc(2);
 
 	mem_pool_print();
-	t_free(p);
+	if (p) t_free(p);
 	mem_pool_print();
 	return 0;
 }
