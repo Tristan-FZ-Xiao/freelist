@@ -1,129 +1,27 @@
 /* It should be a freelist as a memory pool.
  *
+ *	v1.0: a dynamic size memory pool
  *	v0.1: a fixed size memory pool
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
-typedef struct node {
-	struct node *next;
-	struct node *prev;
-} node;
-
-typedef struct node_head {
-	node open_list;
-	char *data;
+typedef struct {
+	char **buf;
 	int size;
-	int account;
-	int used;
+	int cnt, n, max;
 } node_head;
 
-typedef struct node_data {
-	node head;
-	node_head *prev;
-	char *data;
-} node_data;
-
 static node_head *free_list_head;
-
-#define DEFAULT_COUNT	2
 
 /* Support Byte 2 4 8 16 32 64 128 256 512 1024 */
 unsigned int byte_size[] = {
 	2,	4,	8,	16,	32,
 	64,	128,	256,	512,	1024
 };
-
-static void init_node(node *ptr)
-{
-	ptr->next = ptr;
-	ptr->prev = ptr;	
-}
-
-static void __add_node(node *ptr, node *head)
-{
-	ptr->next = head;
-	ptr->prev = head->prev;
-	head->prev->next = ptr;
-	head->prev = ptr;
-}
-
-static void __del_node(node *ptr)
-{
-	ptr->prev->next = ptr->next;
-	ptr->next->prev = ptr->prev;
-}
-
-static void __add_node_data(node_data *ptr, node *head)
-{
-	__add_node(&ptr->head, head);	
-}
-
-static void __del_node_data(node_data *ptr)
-{
-	__del_node(&ptr->head);
-}
-
-static void init_node_head_entry(node_head *ptr, unsigned int size, unsigned int account)
-{
-	node_data *p = NULL;
-	unsigned int i = 0;
-
-	ptr->size = size;
-	ptr->account = account;
-	printf("%d\n", (sizeof(node_data) + size) * account);
-	ptr->data = (char *)malloc((sizeof(node_data) + size) * account);
-
-	for (; i < account; i ++) {
-		p = (node_data *)(ptr->data + i * (sizeof(node_data) + size));
-		p->data = ptr->data + i * (sizeof(node_data) + size) + sizeof(node_data);
-		memset(p->data, 0, ptr->size);
-		p->prev = ptr;
-		__add_node_data(p, &ptr->open_list);
-	}
-}
-
-static node_head *init_node_head(void)
-{
-	int i = 0;
-	node_head *ptr = (node_head *)malloc(sizeof(node_head) * (sizeof(byte_size) / sizeof(int)));
-
-	if (ptr) {
-		memset(ptr, 0, sizeof(node_head) * (sizeof(byte_size) / sizeof(int)));
-		for (; i < sizeof(byte_size) / sizeof(int); i ++) {
-			init_node(&(ptr + i)->open_list);
-			init_node_head_entry(ptr + i, byte_size[i], DEFAULT_COUNT);
-		}
-	}
-	return ptr;
-}
-
-static node_data *get_free_node_data(node_head *head)
-{
-	node_data *p = NULL;
-
-	/* memory node_data use up, reinit a more bigger space */
-	if (head->open_list.next == &head->open_list) {
-		int i = head->account;
-
-		head->data = (char *)realloc(head->data, 
-			(sizeof(node_data) + head->size) * (head->account + DEFAULT_COUNT));
-		head->account += DEFAULT_COUNT;
-		for (; i < head->account; i ++) {
-			p = (node_data *)(head->data + i * (sizeof(node_data) + head->size));
-			p->data = (head->data + i * (sizeof(node_data) + head->size)) + sizeof(node_data);
-			p->prev = head;
-			__add_node_data(p, &head->open_list);
-		}
-	}
-	else {
-		p = (node_data *)(head->open_list.next);	
-	}
-	head->used ++;
-	__del_node_data(p);
-	return p;
-}
 
 static int size2num(unsigned int size)
 {
@@ -163,9 +61,17 @@ static node_head *get_node_head(unsigned int size)
 				byte_size[sizeof(byte_size) / sizeof(int)]);
 		return NULL;
 	}
-	if (NULL == free_list_head) {
-		free_list_head = init_node_head();
+
+	if (free_list_head == NULL) {
+		int i = 0;
+		free_list_head = (node_head *)calloc(sizeof(byte_size) / sizeof(unsigned int),
+							sizeof(node_head));
+		memset(free_list_head, 0, sizeof(node_head) * sizeof(byte_size) / sizeof(unsigned int));
+		for (; i < sizeof(byte_size) / sizeof(unsigned int); i ++) {
+			free_list_head[i].size = (int)pow(2, (i + 1)*1.0);
+		}
 	}
+
 	return &free_list_head[i];
 }
 
@@ -175,50 +81,67 @@ void mem_pool_print(void)
 	node_head *ptr = NULL;
 
 	printf("====================  Memory Pool Status  ====================\n");
-	printf("\tSize\t\tAccount\t\tUsed number\tFree number\n");
+	printf("\tSize\t\tFree Count\tUsed number\n");
 	for (; i < sizeof(byte_size) / sizeof(int); i ++) {
 		ptr = &free_list_head[i];
-		printf("\t%d\t\t%d\t\t%d\t\t%d\n", byte_size[i], ptr->account,
-			ptr->used, (ptr->account - ptr->used));
+		printf("\t%d\t\t%d\t\t%d\n", byte_size[i], ptr->n, ptr->cnt);
 	}
 	printf("====================  Memory Pool End  ====================\n");
 }
 
 char *t_malloc(int size)
 {
-	node_data *data_ptr = NULL;
 	node_head *ptr = get_node_head(size);
 
-	if (ptr == NULL) {
-		printf("ptr == NULL\n");
+	if (!ptr) {
+		printf("Could not found size(%d) pool\n", size);
 		return NULL;
 	}
-	data_ptr = get_free_node_data(ptr);
-	if (data_ptr) {
-		return (char *)data_ptr->data;
+	ptr->cnt ++;
+	if (ptr->n == 0) {
+		char *p = (char *)calloc(1, (ptr->size + 4));
+		*((int *)p) = ptr->size;
+		return p + 4;
 	} else {
-		return NULL;
+		return ptr->buf[--ptr->n] + 4;
 	}
 }
 
 void t_free(char *ptr)
 {
-	node_data *data_p = (node_data *)(ptr - sizeof(node_data));
+	int size = *((int *)(ptr - 4));
+	node_head *p = get_node_head(size);
 
-	memset(data_p->data, 0, data_p->prev->size);
-	__add_node_data(data_p, &data_p->prev->open_list);
-	data_p->prev->used --;
+	p->cnt --;
+	if (!ptr) {
+		printf("Could not found size(%d) pool\n", size);
+	}
+	if (p->n == p->max) {
+		p->max = p->max ? p->max << 1 : 16;
+		p->buf = (char **)realloc(p->buf, sizeof(char *) * p->max);
+	}
+
+	p->buf[p->n ++] = ptr - 4;
 }
 
 int main(int argc, char **argv)
 {
-	char *p = t_malloc(2);
-	char *p1 = t_malloc(2);
-	char *p2 = t_malloc(2);
-	char *p3 = t_malloc(2);
+	char *p = NULL; 
+	char *p1 = t_malloc(8);
+	char *p2 = t_malloc(15);
+	char *p3 = t_malloc(1000);
+	int i = 0;
 
-	mem_pool_print();
-	if (p) t_free(p);
+	for (; i < 200; i ++) {
+		p = t_malloc(2);
+		p1 = t_malloc(8);
+		p3 = t_malloc(1000);
+	}
+	for (; i < 200; i ++) {
+		t_free(p);
+		t_free(p1);
+		t_free(p3);
+	}
 	mem_pool_print();
 	return 0;
 }
